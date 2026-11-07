@@ -72,8 +72,12 @@ class AgenticScheduler:
                     return False
         return True
 
-    def list_jobs(self) -> None:
-        """Display configured jobs in tabular view."""
+    def list_jobs(self, as_json: bool = False) -> None:
+        """Display configured jobs in tabular view or JSON format."""
+        if as_json:
+            print(json.dumps(self.jobs, indent=2))
+            return
+
         print(f"{'ID':<20} {'INTERVAL':<10} {'TIMEOUT':<10} {'STATUS':<12} {'LAST RUN':<20} {'COMMAND'}")
         print("-" * 90)
         for j in self.jobs:
@@ -88,7 +92,7 @@ class AgenticScheduler:
                 cmd = cmd[:27] + "..."
             print(f"{jid:<20} {interval:<10} {timeout:<10} {status:<12} {last_run_str:<20} {cmd}")
 
-    def execute_job(self, job: Dict[str, Any]) -> bool:
+    def execute_job(self, job: Dict[str, Any], quiet: bool = False) -> bool:
         """Execute a single job with timeout safeguards and self-healing hooks."""
         now = time.time()
         now_str = datetime.now().strftime("%H:%M:%S")
@@ -96,7 +100,8 @@ class AgenticScheduler:
         cmd = job.get("command", "")
         timeout = job.get("timeout_seconds", 60)
 
-        print(f"[{now_str}] Executing: {jid} ('{cmd}')")
+        if not quiet:
+            print(f"[{now_str}] Executing: {jid} ('{cmd}')")
         job["last_run"] = now
 
         success = False
@@ -110,50 +115,72 @@ class AgenticScheduler:
             )
             if res.returncode == 0:
                 job["last_status"] = "OK"
-                preview = res.stdout.strip().replace("\n", " ")[:60]
-                print(f"   [✓] Status: OK | Output: {preview}")
+                if not quiet:
+                    preview = res.stdout.strip().replace("\n", " ")[:60]
+                    print(f"   [✓] Status: OK | Output: {preview}")
                 success = True
             else:
                 job["last_status"] = f"FAILED(RC={res.returncode})"
-                err_preview = res.stderr.strip().replace("\n", " ")[:60]
-                print(f"   [!] Status: FAILED (RC={res.returncode}) | Error: {err_preview}")
-                self._trigger_healing(job)
+                if not quiet:
+                    err_preview = res.stderr.strip().replace("\n", " ")[:60]
+                    print(f"   [!] Status: FAILED (RC={res.returncode}) | Error: {err_preview}")
+                self._trigger_healing(job, quiet=quiet)
         except subprocess.TimeoutExpired:
             job["last_status"] = "TIMEOUT"
-            print(f"   [!] Status: TIMEOUT (> {timeout}s)")
-            self._trigger_healing(job)
+            if not quiet:
+                print(f"   [!] Status: TIMEOUT (> {timeout}s)")
+            self._trigger_healing(job, quiet=quiet)
         except Exception as e:
             job["last_status"] = f"ERROR({e.__class__.__name__})"
-            print(f"   [!] Execution error: {e}")
-            self._trigger_healing(job)
+            if not quiet:
+                print(f"   [!] Execution error: {e}")
+            self._trigger_healing(job, quiet=quiet)
 
         self.persist_jobs()
         return success
 
-    def _trigger_healing(self, job: Dict[str, Any]) -> None:
+    def _trigger_healing(self, job: Dict[str, Any], quiet: bool = False) -> None:
         """Invoke self-healing remediation command if configured."""
         heal_cmd = job.get("heal_command")
         if not heal_cmd:
             return
-        print(f"   🔧 Triggering self-healing recovery: {heal_cmd}")
+        if not quiet:
+            print(f"   🔧 Triggering self-healing recovery: {heal_cmd}")
         try:
             h_res = subprocess.run(heal_cmd, shell=True, capture_output=True, text=True, timeout=60)
-            if h_res.returncode == 0:
-                print(f"   [✓] Recovery complete (RC=0)")
-            else:
-                print(f"   [x] Recovery failed (RC={h_res.returncode}): {h_res.stderr.strip()[:60]}")
+            if not quiet:
+                if h_res.returncode == 0:
+                    print(f"   [✓] Recovery complete (RC=0)")
+                else:
+                    print(f"   [x] Recovery failed (RC={h_res.returncode}): {h_res.stderr.strip()[:60]}")
         except Exception as err:
-            print(f"   [x] Recovery execution error: {err}")
+            if not quiet:
+                print(f"   [x] Recovery execution error: {err}")
 
-    def run_tick(self) -> int:
+    def run_tick(self, dry_run: bool = False, quiet: bool = False) -> List[Dict[str, Any]]:
         """Run all jobs that have passed their scheduled interval."""
         now = time.time()
-        executed_count = 0
+        executed: List[Dict[str, Any]] = []
         for j in self.jobs:
             if now - j.get("last_run", 0) >= j.get("interval_seconds", 60):
-                self.execute_job(j)
-                executed_count += 1
-        return executed_count
+                if dry_run:
+                    if not quiet:
+                        print(f"[DRY-RUN] Would execute: {j.get('id')} ('{j.get('command')}')")
+                    executed.append({
+                        "id": j.get("id"),
+                        "command": j.get("command"),
+                        "status": "DRY_RUN",
+                        "interval_seconds": j.get("interval_seconds", 60)
+                    })
+                else:
+                    self.execute_job(j, quiet=quiet)
+                    executed.append({
+                        "id": j.get("id"),
+                        "command": j.get("command"),
+                        "status": j.get("last_status"),
+                        "last_run": j.get("last_run")
+                    })
+        return executed
 
     def run_specific(self, job_id: str) -> bool:
         """Run a single job by id immediately."""
@@ -173,6 +200,8 @@ def main() -> None:
     parser.add_argument("--save-state", action="store_true", help="Persist job execution timestamps and status back to file")
     parser.add_argument("--jobs", default="jobs.json", help="Path to jobs configuration JSON file (default: jobs.json)")
     parser.add_argument("--interval", type=int, default=5, help="Daemon tick interval in seconds (default: 5)")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate pending jobs without executing commands")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON format for --list or --once")
 
     args = parser.parse_args()
     sched = AgenticScheduler(args.jobs, save_state=args.save_state)
@@ -186,7 +215,7 @@ def main() -> None:
             sys.exit(1)
 
     if args.list:
-        sched.list_jobs()
+        sched.list_jobs(as_json=args.json)
         sys.exit(0)
 
     if args.test:
@@ -194,8 +223,12 @@ def main() -> None:
         sys.exit(0 if ok else 1)
 
     if args.once:
-        count = sched.run_tick()
-        print(f"[*] Completed tick. Executed {count} job(s).")
+        executed = sched.run_tick(dry_run=args.dry_run, quiet=args.json)
+        if args.json:
+            print(json.dumps(executed, indent=2))
+        else:
+            action_label = "Simulated" if args.dry_run else "Executed"
+            print(f"[*] Completed tick. {action_label} {len(executed)} job(s).")
         sys.exit(0)
 
     print(f"[*] Agentic Self-Healing Scheduler active ({len(sched.jobs)} jobs loaded). Watching tasks...")

@@ -15,6 +15,7 @@
 - ⏱️ **Per-Job Execution Timeouts:** Prevents runaway background processes from locking down scheduled agent pipelines.
 - 💾 **State Persistence:** Optional `--save-state` tracks real-time execution timestamps and success/failure status in `jobs.json`.
 - 🔍 **Targeted Execution & Validation:** `--list` for tabular overview, `--test <id>` for immediate manual trigger, and `--validate` for schema safety.
+- 🧪 **Dry-Run & Agent JSON Output:** `--dry-run` to preview pending schedules without execution; `--json` for machine-readable output by agent tool callers.
 - 🪶 **Zero Dependencies:** Pure Python standard library implementation.
 
 ---
@@ -23,7 +24,11 @@
 
 ### 1. View Configured Jobs
 ```bash
+# Tabular view
 python3 scheduler.py --list
+
+# Machine-readable JSON output for agent tools
+python3 scheduler.py --list --json
 ```
 
 ### 2. Validate Configuration File
@@ -33,8 +38,11 @@ python3 scheduler.py --validate
 
 ### 3. Run a Single Tick or Specific Job
 ```bash
-# Execute only pending scheduled tasks once and exit
-python3 scheduler.py --once
+# Preview pending jobs without executing commands
+python3 scheduler.py --once --dry-run
+
+# Execute only pending scheduled tasks once and output JSON
+python3 scheduler.py --once --json
 
 # Test a specific job on demand
 python3 scheduler.py --test health-check
@@ -70,6 +78,14 @@ python3 scheduler.py --save-state --interval 5
     "heal_command": "python3 alert_dev.py --job vault-sync"
   }
 ]
+```
+
+---
+
+## 🧪 Testing
+
+```bash
+python3 -m unittest discover tests
 ```
 
 ---
