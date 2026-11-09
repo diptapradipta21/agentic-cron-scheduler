@@ -71,6 +71,42 @@ class TestAgenticScheduler(unittest.TestCase):
         self.assertTrue(heal_target.exists())
         self.assertIn("remediated", heal_target.read_text())
 
+    def test_execute_job_retries(self):
+        # Flaky job that succeeds on second try
+        counter_file = Path(self.test_dir) / "flaky_counter.txt"
+        counter_file.write_text("0")
+        cmd = f'python3 -c "from pathlib import Path; p = Path(\'{counter_file}\'); n = int(p.read_text()); p.write_text(str(n+1)); exit(0 if n >= 1 else 1)"'
+        job = {
+            "id": "flaky-job",
+            "command": cmd,
+            "interval_seconds": 10,
+            "timeout_seconds": 5,
+            "retries": 2,
+            "retry_delay_seconds": 0.05,
+            "last_run": 0
+        }
+        sched = AgenticScheduler(job_file=str(self.jobs_file))
+        success = sched.execute_job(job, quiet=True)
+        self.assertTrue(success)
+        self.assertEqual(job["last_status"], "OK")
+        self.assertEqual(int(counter_file.read_text()), 2)
+
+    def test_status_summary(self):
+        jobs = [
+            {"id": "j1", "command": "echo 1", "last_status": "OK"},
+            {"id": "j2", "command": "exit 1", "last_status": "FAILED(RC=1)"},
+            {"id": "j3", "command": "sleep 10", "last_status": "TIMEOUT"},
+            {"id": "j4", "command": "echo pending", "last_status": "PENDING"}
+        ]
+        self.jobs_file.write_text(json.dumps(jobs))
+        sched = AgenticScheduler(job_file=str(self.jobs_file))
+        summary = sched.get_status_summary()
+        self.assertEqual(summary["TOTAL"], 4)
+        self.assertEqual(summary["OK"], 1)
+        self.assertEqual(summary["FAILED"], 1)
+        self.assertEqual(summary["TIMEOUT"], 1)
+        self.assertEqual(summary["PENDING"], 1)
+
     def test_run_tick_dry_run(self):
         jobs = [
             {
